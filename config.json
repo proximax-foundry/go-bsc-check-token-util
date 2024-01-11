@@ -1,0 +1,15 @@
+{
+    "botApiKey": "1111111111:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "chatID": 111111111,
+    "quantity": 99999,
+    "sleep": 60,
+    "walletAddress": [
+        "0x4396e28197653d0c244d95f8c1e57da902a72b4e",
+        "0xfd821d8cea64feacb6ec86d979e37bc64c64a00b",
+        "0x340af1569dd845ff7d18baf1e06961c95d708793"
+    ],
+    "tokenContractAddress": [
+        "0xf0dA712efF5d6B9FF48fc40BC6854F4A145C96Da",
+        "0x74115fF8Ee0277D173048a488d04BAfd894009c6"
+    ]
+}
