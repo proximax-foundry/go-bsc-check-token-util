@@ -1,15 +1,21 @@
 {
     "botApiKey": "1111111111:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     "chatID": 111111111,
-    "quantity": 99999,
     "sleep": 60,
+    "alarmInterval": 1,
     "walletAddress": [
-        "0x4396e28197653d0c244d95f8c1e57da902a72b4e",
-        "0xfd821d8cea64feacb6ec86d979e37bc64c64a00b",
-        "0x340af1569dd845ff7d18baf1e06961c95d708793"
+        "0x9e01275688FA7Bd24fef80cE6f2206411F56b392"
     ],
-    "tokenContractAddress": [
-        "0x787644d442E0B65353F418e58774099f64aaF1b3",
-        "0xaaB9c9f53B0aA9ABf1A8906d6656D6Bce1478660"
-    ]
+    "tokenList": {
+        "bnb": {
+            "defaultCurrency": true,
+            "tokenContractAddress": "",
+            "thresholdBalance": 9999999999
+        },
+        "xpx": {
+            "defaultCurrency": false,
+            "tokenContractAddress": "0x6F3AAf802F57D045efDD2AC9c06d8879305542aF",
+            "thresholdBalance": 9999999999
+        }
+    }
 }

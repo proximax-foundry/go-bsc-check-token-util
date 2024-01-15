@@ -11,19 +11,18 @@ import (
 	"strconv"
 	"strings"
 	"math/big"
-	"encoding/hex"
 	"encoding/json"
 	"github.com/ethereum/go-ethereum/rpc"
     tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 type Config struct {
-    BotApiKey     			*string
-    ChatID        			*int64
-    Quantity     			*float64
-    Sleep         			*int
-    WalletAddress      		[]*string
-    TokenContractAddress	[]*string
+	Sleep         	*int
+    ChatID        	*int64
+    BotApiKey     	*string
+	AlarmInterval	*int
+	WalletAddress   []*string
+	TokenList       map[string]Token
 }
 
 type hexOrDecimalBigInt struct {
@@ -36,10 +35,18 @@ type Symbol struct {
 
 type WalletDetail struct {
     Address		string
-    Tokens		[]string
+    Balance		[]string
+}
+
+type Token struct {
+	DefaultCurrency			*bool // need to check if they are nil
+	TokenContractAddress	*string
+	ThresholdBalance		*float64
 }
 
 var config Config
+var client *rpc.Client
+var alarmTime time.Time
 var quantity *big.Float
 
 func main() {
@@ -48,51 +55,61 @@ func main() {
         errHandling(err)
     }
 
-	client, err := rpc.Dial("https://bsc-dataseed.binance.org/")
+	client, err = rpc.Dial("https://bsc-dataseed.binance.org/")
+
 	if err != nil {
 		errHandling(fmt.Errorf("Failed to send RPC call: %v\n", err))
 	}
 	defer client.Close()
 
-	quantity = big.NewFloat(*config.Quantity)
+	alarmInterval := time.Duration(*config.AlarmInterval) * time.Hour
 
-	for {
-		var targets []WalletDetail 
-		for _, walletAddress := range config.WalletAddress {
-			var tokens []string
-			bnbBalance, err := getBNBBalance(client, *walletAddress)
-			if err != nil {
-				errHandling(fmt.Errorf("Failed to get BNB balance: %v\n", err))
-			}
-
-			if bnbBalance.Cmp(quantity) < 0 {
-				tokens = append(tokens, "BNB")
-			}
-
-			for _, tokenContractAddress := range config.TokenContractAddress {
-				tokenBalance, symbol, err := getTokenBalance(client, *tokenContractAddress, *walletAddress)
-				if err != nil {
-					errHandling(fmt.Errorf("Failed to get token balance: %v\n", err))
+    for {
+        var targetWallets []WalletDetail
+        for _, walletAddress := range config.WalletAddress {
+            var targetTokens []string
+			for name, detail := range config.TokenList {
+				if detail.DefaultCurrency == nil {
+					errHandling(fmt.Errorf("Missing value of DefaultCurrency in TokenList in config.json\n"))
+				} else if detail.TokenContractAddress == nil {
+					errHandling(fmt.Errorf("Missing value of TokenContractAddress in TokenList in config.json\n"))
+				} else if detail.ThresholdBalance == nil {
+					errHandling(fmt.Errorf("Missing value of ThresholdBalance in TokenList in config.json\n"))
 				}
-				if tokenBalance.Cmp(quantity) < 0 {
-					tokens = append(tokens, symbol)
+				tokenName := strings.ToUpper(name)
+				quantity := big.NewFloat(*detail.ThresholdBalance)
+
+				if *detail.DefaultCurrency {
+					bnbBalance, err := getBNBBalance(*walletAddress)
+					if err != nil {
+						errHandling(fmt.Errorf("Failed to get BNB balance: %v\n", err))
+					}
+					if bnbBalance.Cmp(quantity) < 0 {
+						targetTokens = append(targetTokens, bnbBalance.String() + " " + tokenName)
+					}
+				} else {
+					tokenBalance, err := getTokenBalance(*detail.TokenContractAddress, *walletAddress)
+					if err != nil {
+						errHandling(fmt.Errorf("Failed to get token balance: %v\n", err))
+					}
+					if tokenBalance.Cmp(quantity) < 0 {
+						targetTokens = append(targetTokens, tokenBalance.String() + " " + tokenName)
+					}
 				}
 			}
-			if len(tokens) > 0 {
-				targets = append(targets, WalletDetail{
-					Address: *walletAddress,
-					Tokens: tokens,
-				})
-			}
-		}
-		if len(targets) > 0 {
-			err := sendAlert(targets)
-			if err != nil {
-                errHandling(fmt.Errorf("Failed to send alert: %v\n", err))
+            if len(targetTokens) > 0 {
+                targetWallets = append(targetWallets, WalletDetail{
+                    Address: *walletAddress,
+					Balance: targetTokens,
+                })
             }
-		}
-		time.Sleep(time.Duration(*config.Sleep) * time.Second)
-	}
+        }
+        if len(targetWallets) > 0 && time.Since(alarmTime) > alarmInterval {
+            sendAlert(targetWallets)
+			alarmTime = time.Now() 
+        }
+        time.Sleep(time.Duration(*config.Sleep)*time.Second)
+    }
 }
 
 func checkMissingFields() (error) {
@@ -108,6 +125,7 @@ func checkMissingFields() (error) {
             missingFields = append(missingFields, field.Name)
         }
 	}
+
     if len(missingFields) > 0 {
         errMsg := "Cannot get the value of "
         for j, field := range missingFields {
@@ -124,24 +142,26 @@ func checkMissingFields() (error) {
 
 func constructMsg(targets []WalletDetail) (string, []tgbotapi.MessageEntity, error) {
     n := 0
-    strMsg := "The following BSC accounts' tokens have balance less than " + quantity.String() + ": \n\n"
-    strMsgLen := len(strMsg)
     entities := []tgbotapi.MessageEntity{}
+
+    msg := "The following BSC accounts' tokens require top up:\n\n"
     for i, target := range targets {
         entities = append(entities, tgbotapi.MessageEntity{
             Type: "text_link",
-            Offset: i*43 + n + strMsgLen,
+            Offset: 52 + i*43 + n,
             Length: 42,
             URL: "https://bscscan.com/address/" + target.Address,
         })
 
-        strMsg += target.Address + "\n"
-        for _, token := range target.Tokens {
-            strMsg += "- " + token + "\n"
-            n += len(token) + 3
-        }
+        msg += target.Address + "\n"
+        var balanceMsg string
+		for _, balance := range target.Balance {
+			balanceMsg = "- " + balance + "\n"
+			msg += balanceMsg
+			n += len(balanceMsg)
+		}
     }
-    return strMsg, entities, nil
+    return msg, entities, nil
 }
 
 func errHandling(err error) {
@@ -149,7 +169,7 @@ func errHandling(err error) {
     log.Fatal("Error: ", err)
 }
 
-func getBNBBalance(client *rpc.Client, address string) (*big.Float, error) {
+func getBNBBalance(address string) (*big.Float, error) {
 	var result hexOrDecimalBigInt
 
 	err := client.CallContext(context.Background(), &result, "eth_getBalance", address, "latest")
@@ -166,7 +186,7 @@ func getBNBBalance(client *rpc.Client, address string) (*big.Float, error) {
 	return balanceBNB, nil
 }
 
-func getTokenBalance(client *rpc.Client, tokenContractAddress string, address string) (*big.Float, string, error) {
+func getTokenBalance(tokenContractAddress string, address string) (*big.Float, error) {
 	data := fmt.Sprintf("0x70a08231000000000000000000000000%s", address[2:])
 
 	var result hexOrDecimalBigInt
@@ -175,27 +195,23 @@ func getTokenBalance(client *rpc.Client, tokenContractAddress string, address st
 		"input": data,
 		}, "latest")
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
 	balance, success := new(big.Int).SetString(result.String(), 0)
 	if !success {
-		return nil, "", fmt.Errorf("Failed to convert balance to big.Int")
+		return nil, fmt.Errorf("Failed to convert balance to big.Int")
 	}
 
-	decimals, err := getTokenDecimals(client, tokenContractAddress)
+	decimals, err := getTokenDecimals(tokenContractAddress)
 	if err != nil {
-		return nil, "", fmt.Errorf("Failed to get token decimals: %v\n", err)
-	}
-	symbol, err := getTokenSymbol(client, tokenContractAddress)
-	if err != nil {
-		return nil, "", fmt.Errorf("Failed to get token symbol: %v\n", err)
+		return nil, fmt.Errorf("Failed to get token decimals: %v\n", err)
 	}
 	balanceFloat := new(big.Float).Quo(new(big.Float).SetInt(balance), big.NewFloat(math.Pow(10, decimals)))
-	return balanceFloat, symbol, nil
+	return balanceFloat, nil
 }
 
-func getTokenDecimals(client *rpc.Client, tokenContractAddress string) (float64, error) {
+func getTokenDecimals(tokenContractAddress string) (float64, error) {
 	var result hexOrDecimalBigInt 
 	err := client.CallContext(context.Background(), &result, "eth_call", map[string]interface{} {
 		"to":   tokenContractAddress,
@@ -212,31 +228,19 @@ func getTokenDecimals(client *rpc.Client, tokenContractAddress string) (float64,
 	return decimals, nil
 }
 
-func getTokenSymbol(client *rpc.Client, tokenContractAddress string) (string, error) {
-	var result Symbol 
-	err := client.CallContext(context.Background(), &result, "eth_call", map[string]interface{} {
-		"to":   tokenContractAddress,
-		"input": "0x95d89b41",
-		}, "latest")
-	if err != nil {
-		return "", err
-	}
-	return result.Name, nil
-}
-
 func readConfig() (error) {
-    configFile, err := os.Open("config.json")
-
+	configFile, err := os.Open("config.json")
     if err != nil {
         return fmt.Errorf("Cannot open config.json: %v\n", err)
     }
-
     defer configFile.Close()
 
-    jsonParser := json.NewDecoder(configFile)
-    if jsonParser.Decode(&config); err != nil {
-        return fmt.Errorf("Cannot decode config.json: %v\n", err)
-    }
+	jsonParser := json.NewDecoder(configFile)
+
+	err = jsonParser.Decode(&config)
+	if err != nil {
+		return fmt.Errorf("Cannot decode config.json: %v\n", err)
+	}
 
 	if err = checkMissingFields(); err != nil {
         return err
@@ -267,30 +271,11 @@ func (h *hexOrDecimalBigInt) UnmarshalJSON(data []byte) error {
 	str := string(data[1:len(data)-1])
 
 	if str[:2] == "0x" {
-		// Hex
 		i, success := new(big.Int).SetString(str[2:], 16)
 		if !success {
 			return fmt.Errorf("Failed to parse hex number")
 		}
 		h.Int = i
-	} else {
-		// Decimal
-		i, success := new(big.Int).SetString(str, 10)
-		if !success {
-			return fmt.Errorf("Failed to parse decimal number")
-		}
-		h.Int = i
 	}
-	return nil
-}
-
-func (s *Symbol) UnmarshalJSON(data []byte) error {
-	str := string(data[1:len(data)-1])
-
-	bytes, err := hex.DecodeString(str[130:])
-	if err != nil {
-		return err
-	}
-	s.Name = strings.TrimSpace(string(bytes))
 	return nil
 }
