@@ -29,10 +29,6 @@ type hexOrDecimalBigInt struct {
 	*big.Int
 }
 
-type Symbol struct {
-	Name string
-}
-
 type WalletDetail struct {
     Address		string
     Balance		[]string
